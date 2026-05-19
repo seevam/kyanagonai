@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AgonAI - Political Agent Debate Lab</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header class="hero">
+        <div class="hero-copy">
+          <h1>AgonAI: Political Agent Consensus Lab</h1>
+          <p>
+            Explore empathy-weighted negotiations between historically adversarial personas. Hover over a
+            chatbot on the world map to see their origin, role, and bio, then add them to a debate run.
+          </p>
+          <div class="hero-actions">
+            <button class="secondary" id="jumpToConfig">Configure Debate</button>
+            <button class="secondary" id="jumpToExperiments">Run Experiments</button>
+          </div>
+        </div>
+        <section class="map-panel" aria-label="World map with chatbot agents">
+          <div class="map-stage">
+            <svg class="world-map" viewBox="0 0 900 450" role="img" aria-label="Stylized world map">
+              <path d="M67 146l70-34 51 16 22 36-16 44-52 20-58-16-17-36z" />
+              <path d="M248 122l80-28 78 18 34 38-10 44-60 28-78-10-52-44z" />
+              <path d="M408 188l68-22 76 12 46 40-8 36-70 30-72-12-36-34z" />
+              <path d="M552 132l70-26 86 20 40 38-12 42-70 30-84-14-30-40z" />
+              <path d="M610 244l96-28 76 10 46 40-18 46-88 30-72-12-40-36z" />
+              <path d="M120 268l68-24 76 14 40 32-12 40-78 28-72-14-22-32z" />
+            </svg>
+            <button class="agent-marker" data-agent="hitler" style="left: 47%; top: 35%;">
+              <span class="avatar avatar-hitler">AH</span>
+            </button>
+            <button class="agent-marker" data-agent="gandhi" style="left: 63%; top: 46%;">
+              <span class="avatar avatar-gandhi">MG</span>
+            </button>
+            <button class="agent-marker" data-agent="jinnah" style="left: 66%; top: 42%;">
+              <span class="avatar avatar-jinnah">MJ</span>
+            </button>
+            <div class="map-legend">
+              <span class="legend-pill">Hover to zoom + view bio</span>
+              <span class="legend-pill">Click to add to debate</span>
+            </div>
+          </div>
+          <aside class="agent-profile" id="agentProfile">
+            <div class="agent-header">
+              <span class="avatar avatar-hitler" id="profileAvatar">AH</span>
+              <div>
+                <h3 id="profileName">Select an agent</h3>
+                <p id="profileOrigin">Origin: —</p>
+              </div>
+            </div>
+            <p id="profileBio">
+              Hover over a chatbot marker to view their background and negotiation persona.
+            </p>
+            <div class="profile-tags" id="profileTags"></div>
+            <div class="profile-actions">
+              <button id="addToDebate" disabled>Add to Debate</button>
+              <button class="secondary" id="focusChat" disabled>Focus Bio Chat</button>
+            </div>
+            <p class="profile-note" id="profileNote">
+              Use "Focus Bio Chat" to prefill the topic with a guided intro prompt.
+            </p>
+          </aside>
+        </section>
+      </header>
+
+      <section class="panel" id="configPanel">
+        <h2>Configuration</h2>
+        <div class="form-row">
+          <label>Agents:</label>
+          <div class="agents">
+            <label><input type="checkbox" class="agent" value="hitler" checked /> Hitler</label>
+            <label><input type="checkbox" class="agent" value="gandhi" checked /> Gandhi</label>
+            <label><input type="checkbox" class="agent" value="jinnah" checked /> Jinnah</label>
+            <label><input type="checkbox" class="agent" value="rational" /> Rational</label>
+            <label><input type="checkbox" class="agent" value="empathetic" /> Empathetic</label>
+          </div>
+        </div>
+        <div class="form-row">
+          <label for="topic">Topic:</label>
+          <select id="topicSelect">
+            <option value="territorial_disputes">Territorial Disputes</option>
+            <option value="war">War</option>
+            <option value="immigration">Immigration</option>
+            <option value="socialism">Socialism</option>
+            <option value="economic_policy">Economic Policy</option>
+            <option value="race_relations">Race Relations</option>
+            <option value="partition_of_india">Partition of India</option>
+            <option value="custom">Custom...</option>
+          </select>
+          <input id="topic" type="text" placeholder="custom topic" value="territorial_disputes" style="flex:1" />
+        </div>
+        <div class="form-row">
+          <label for="rounds">Rounds:</label>
+          <input id="rounds" type="number" min="3" max="30" value="12" />
+        </div>
+        <div class="form-row">
+          <label><input id="summaryOnly" type="checkbox" /> Summary only</label>
+        </div>
+        <div class="form-row">
+          <button id="runBtn">Run Debate</button>
+        </div>
+      </section>
+
+      <!-- Chat-style results -->
+      <section class="panel" id="chatPanel" style="display:none">
+        <h2>Debate Chat</h2>
+        <div class="chat-stats" id="chatStats"></div>
+        <div class="chat-container" id="chatContainer"></div>
+        <div class="chat-scores" id="chatScores"></div>
+      </section>
+
+      <!-- Policy Scores -->
+      <section class="panel" id="scoresPanel" style="display:none">
+        <h2>Policy Scores</h2>
+        <div class="scores-grid" id="scoresGrid"></div>
+      </section>
+
+      <!-- Experiments -->
+      <section class="panel" id="experimentPanel">
+        <h2>Experiments</h2>
+        <p class="help-text">Run pre-configured experiments to compare rational vs empathetic negotiation.</p>
+        <div class="form-row">
+          <label for="expSelect">Experiment:</label>
+          <select id="expSelect">
+            <option value="1">1. Rational vs Rational</option>
+            <option value="2">2. Empathetic vs Empathetic</option>
+            <option value="3">3. Rational vs Empathetic</option>
+            <option value="4">4. Low Empathy vs High Empathy</option>
+            <option value="5">5. Historical Conflict</option>
+            <option value="6">6. Historical + Empathy Injection</option>
+            <option value="7">7. Historical + Judge</option>
+            <option value="8">8. Full Pipeline</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label for="expTopic">Topic:</label>
+          <select id="expTopic">
+            <option value="war">War</option>
+            <option value="immigration">Immigration</option>
+            <option value="socialism">Socialism</option>
+            <option value="territorial_disputes">Territorial Disputes</option>
+            <option value="economic_policy">Economic Policy</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label for="expRounds">Rounds:</label>
+          <input id="expRounds" type="number" min="3" max="30" value="15" />
+        </div>
+        <div class="form-row" id="expHistRow">
+          <label>Historical agents (for exp 5-8):</label>
+          <div class="agents">
+            <label><input type="checkbox" class="exp-agent" value="hitler" checked /> Hitler</label>
+            <label><input type="checkbox" class="exp-agent" value="gandhi" checked /> Gandhi</label>
+            <label><input type="checkbox" class="exp-agent" value="jinnah" /> Jinnah</label>
+          </div>
+        </div>
+        <div class="form-row">
+          <button id="runExpBtn">Run Experiment</button>
+        </div>
+        <div id="expResults" style="display:none">
+          <h3>Experiment Results</h3>
+          <div class="chat-stats" id="expStats"></div>
+          <div class="chat-container" id="expChat"></div>
+          <div id="expDetails"></div>
+        </div>
+      </section>
+
+      <!-- Raw JSON -->
+      <section class="panel">
+        <h2>Raw Data</h2>
+        <pre id="results" class="code"></pre>
+      </section>
+    </div>
+
+    <script src="/static/main.js"></script>
+  </body>
+</html>
