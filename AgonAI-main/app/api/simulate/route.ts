@@ -174,8 +174,12 @@ function buildPayload(result: any, agents: any[], agentNames: string[], topic: s
     empathyRatios: Object.fromEntries(
       agents.map((a) => [a.name, Math.round(a.empathyRatio * 1000) / 1000]),
     ),
+    // Bug 5: expose conversation-level empathy reservoir so it's trackable in the frontend
+    conversationEmpathyReservoir: Math.round(conversationState.metrics.empathyReservoir * 1000) / 1000,
     oceanTraits: Object.fromEntries(agents.map((a) => [a.name, a.ocean.asDict()])),
     majorityVote: result.majorityVote,
     finalResolution: result.finalResolution,
+    // Bug 7: include judge verdict with LLM transcript analysis
+    judgeVerdict: result.judgeVerdict ?? null,
   };
 }

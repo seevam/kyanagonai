@@ -59,6 +59,37 @@ export class GandhiAgent extends HistoricalAgent {
     };
   }
 
+  protected generateFallbackResponse(topic: string): string {
+    const seeds: Record<string, string[]> = {
+      territorial_disputes: [
+        "Truth and love have always won. Violence only breeds more violence — peaceful negotiation is the only path forward.",
+        "We must seek the truth in the other's grievance. What do they truly need that we have not listened to?",
+        "Ahimsa demands we find the suffering beneath this dispute. No territory is worth a single human life.",
+        "Let us fast together rather than fight. Shared sacrifice builds more trust than any treaty.",
+        "The strength of a people lies not in weapons, but in their willingness to suffer for justice.",
+        "Compromise reached through truth is not weakness; it is the highest form of human strength.",
+      ],
+      race_relations: [
+        "There is no Hindu, no Muslim — only human beings striving for dignity before God.",
+        "Prejudice is a prison we build around ourselves. Liberation comes only from recognizing our shared humanity.",
+        "I have seen hatred tear families apart. Only love can mend what division has broken.",
+        "Every soul deserves equal dignity — this is not philosophy, it is simple truth.",
+        "We must first purify ourselves of hatred before we can purify our society.",
+        "Unity in diversity is our greatest strength; pretending differences do not exist helps no one.",
+      ],
+      economic_policy: [
+        "The spinning wheel is not merely cotton — it is self-respect and independence made visible.",
+        "A nation that cannot feed itself cannot truly be free, regardless of what flag flies above it.",
+        "True wealth is measured in the dignity of the poorest villager, not the richest merchant.",
+        "Machinery displaces workers; we must ask whose interests it truly serves.",
+        "Simplicity is not poverty — it is liberation from the endless hunger of desire.",
+        "Villages must sustain themselves; centralization only breeds dependence and corruption.",
+      ],
+    };
+    const topicSeeds = seeds[topic] ?? seeds["territorial_disputes"];
+    return topicSeeds[this.conversationHistory.length % topicSeeds.length];
+  }
+
   async generateResponse(
     topic: string,
     otherAgents: HistoricalAgent[],

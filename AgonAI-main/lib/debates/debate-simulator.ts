@@ -3,6 +3,7 @@
  */
 
 import type { HistoricalAgent } from "../agents/base-agent";
+import { JudgeAgent, type JudgeVerdict } from "../agents/judge-agent";
 import { ConversationState, planResponse } from "../utils/conversation-state";
 
 export enum DebateStatus {
@@ -33,6 +34,7 @@ export interface DebateResult {
   majorityVote: Record<string, unknown>;
   finalResolution: Record<string, unknown> | null;
   policyScorecards?: Record<string, Record<string, unknown>>;
+  judgeVerdict?: JudgeVerdict;
 }
 
 export class DebateSimulator {
@@ -41,6 +43,8 @@ export class DebateSimulator {
   memoryWindow: number;
   debateHistory: DebateRound[] = [];
   conversationState: ConversationState | null = null;
+  private deadlockWarningIssued = false;
+  private deadlockEscalationRoundsLeft = 0;
 
   constructor(opts?: {
     maxRounds?: number;
@@ -63,7 +67,11 @@ export class DebateSimulator {
 
     const startTime = Date.now();
     this.debateHistory = [];
+    this.deadlockWarningIssued = false;
+    this.deadlockEscalationRoundsLeft = 0;
     const currentContext: Record<string, unknown> = { ...(initialContext ?? {}) };
+    // Grab an LLM client from any agent that has one (for the judge, Bug 7)
+    const llmClient = agents.find((a) => a.llmClient)?.llmClient ?? null;
     this.conversationState =
       (currentContext.conversation_state as ConversationState) ?? null;
 
@@ -110,6 +118,9 @@ export class DebateSimulator {
 
       currentSpeaker.updatePosition({ [topic]: response });
 
+      // Bug 5: update individual agent empathy based on response content
+      currentSpeaker.updateEmpathy(response, agents.filter((a) => a !== currentSpeaker));
+
       // Record the round
       const roundData: DebateRound = {
         roundNumber: roundNum + 1,
@@ -144,13 +155,29 @@ export class DebateSimulator {
           agents,
           consensusScore,
           duration,
+          llmClient,
         );
       }
 
-      // Check deadlock
+      // Bug 6: semantic deadlock with escalation before hard stop
       if (this.isDeadlock()) {
-        const duration = (Date.now() - startTime) / 60000;
-        return await this.createResult(DebateStatus.DEADLOCK, agents, consensusScore, duration);
+        if (!this.deadlockWarningIssued) {
+          // First detection: inject escalation prompt and allow 2 more rounds
+          this.deadlockWarningIssued = true;
+          this.deadlockEscalationRoundsLeft = 2;
+          currentContext.escalation_prompt =
+            "The negotiation is at an impasse. You must either make a significant concession or propose a completely new framework. Repeating your prior position is not acceptable.";
+        } else if (this.deadlockEscalationRoundsLeft > 0) {
+          this.deadlockEscalationRoundsLeft--;
+        } else {
+          // Hard stop after escalation period exhausted
+          delete currentContext.escalation_prompt;
+          const duration = (Date.now() - startTime) / 60000;
+          return await this.createResult(DebateStatus.DEADLOCK, agents, consensusScore, duration, llmClient);
+        }
+      } else if (this.deadlockWarningIssued && this.deadlockEscalationRoundsLeft === 0) {
+        // Escalation worked — clear the prompt
+        delete currentContext.escalation_prompt;
       }
 
       currentContext[`round_${roundNum + 1}_response`] = response;
@@ -159,7 +186,7 @@ export class DebateSimulator {
 
     const duration = (Date.now() - startTime) / 60000;
     const finalConsensus = this.calculateConsensusScore(agents);
-    return await this.createResult(DebateStatus.CONCLUDED, agents, finalConsensus, duration);
+    return await this.createResult(DebateStatus.CONCLUDED, agents, finalConsensus, duration, llmClient);
   }
 
   private calculateConsensusScore(agents: HistoricalAgent[]): number {
@@ -175,24 +202,29 @@ export class DebateSimulator {
     return pairCount > 0 ? totalScore / pairCount : 0;
   }
 
-  private isDeadlock(lookbackRounds = 6): boolean {
+  private wordOverlap(a: string, b: string): number {
+    const wordsA = new Set(a.toLowerCase().split(/\s+/));
+    const wordsB = new Set(b.toLowerCase().split(/\s+/));
+    let overlap = 0;
+    for (const w of wordsA) if (wordsB.has(w)) overlap++;
+    const union = new Set([...wordsA, ...wordsB]).size;
+    return union > 0 ? overlap / union : 0;
+  }
+
+  // Bug 6: average pairwise similarity > 0.80 triggers soft deadlock
+  private isDeadlock(lookbackRounds = 5): boolean {
     if (this.debateHistory.length < lookbackRounds) return false;
     const recent = this.debateHistory.slice(-lookbackRounds).map((r) => r.response);
 
-    // Count distinct responses using fuzzy matching (word overlap)
-    const distinct: string[] = [];
-    for (const resp of recent) {
-      const wordsA = new Set(resp.toLowerCase().split(/\s+/));
-      const isDuplicate = distinct.some((existing) => {
-        const wordsB = new Set(existing.toLowerCase().split(/\s+/));
-        let overlap = 0;
-        for (const w of wordsA) if (wordsB.has(w)) overlap++;
-        const union = new Set([...wordsA, ...wordsB]).size;
-        return union > 0 && overlap / union >= 0.5;
-      });
-      if (!isDuplicate) distinct.push(resp);
+    let totalSim = 0;
+    let pairs = 0;
+    for (let i = 0; i < recent.length; i++) {
+      for (let j = i + 1; j < recent.length; j++) {
+        totalSim += this.wordOverlap(recent[i], recent[j]);
+        pairs++;
+      }
     }
-    return distinct.length <= 2;
+    return pairs > 0 && totalSim / pairs > 0.80;
   }
 
   private async createResult(
@@ -200,6 +232,7 @@ export class DebateSimulator {
     agents: HistoricalAgent[],
     consensusScore: number,
     duration: number,
+    llmClientForJudge?: import("../agents/base-agent").LLMClient | null,
   ): Promise<DebateResult> {
     const { agreements, disagreements } = this.analyzePositions(agents);
     const finalPositions: Record<string, Record<string, string>> = {};
@@ -214,6 +247,14 @@ export class DebateSimulator {
       }
     }
 
+    // Bug 7: run judge evaluation on the full transcript
+    const judge = new JudgeAgent(undefined, llmClientForJudge ?? null);
+    const judgeVerdict = await judge.evaluate(
+      agents,
+      this.debateHistory as unknown as Record<string, unknown>[],
+      this.debateHistory.map((r) => r.response).join("\n\n"),
+    );
+
     return {
       status,
       rounds: [...this.debateHistory],
@@ -225,6 +266,7 @@ export class DebateSimulator {
       majorityVote,
       finalResolution,
       policyScorecards: Object.keys(policyScorecards).length ? policyScorecards : undefined,
+      judgeVerdict,
     };
   }
 
