@@ -113,8 +113,8 @@ export async function runExperiment(config: ExperimentConfig): Promise<Experimen
       response: rd.response,
       round: rd.roundNumber,
     }));
-    judgeVerdict = judge.evaluate(config.agents, roundsData, config.topic);
-    convergenceRound = judgeVerdict.convergence_round;
+    judgeVerdict = await judge.evaluate(config.agents, roundsData, config.topic);
+    convergenceRound = judgeVerdict?.convergence_round ?? null;
   }
 
   const scorecards: Record<string, Record<string, unknown>> = {};

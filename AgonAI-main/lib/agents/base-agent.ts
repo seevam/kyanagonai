@@ -222,23 +222,64 @@ export abstract class HistoricalAgent {
     return this.memoryClient.summarizeRecent(this.name);
   }
 
+  // ---- Fallback responses when no LLM client (Bug 3) ----
+  protected generateFallbackResponse(_topic: string): string {
+    throw new Error(`No LLM client configured for ${this.name}`);
+  }
+
+  // ---- Update empathy reservoir based on response content (Bug 5) ----
+  updateEmpathy(response: string, opponents: HistoricalAgent[]): void {
+    const responseLower = response.toLowerCase();
+
+    // Increment if this response references an opponent's recent claim
+    let referencedOpponent = false;
+    for (const opponent of opponents) {
+      for (const entry of opponent.conversationHistory.slice(-3)) {
+        const words = entry.content.toLowerCase().split(/\s+/).filter((w) => w.length > 4);
+        if (!words.length) continue;
+        const overlap = words.filter((w) => responseLower.includes(w)).length;
+        if (overlap / words.length > 0.25) {
+          referencedOpponent = true;
+          break;
+        }
+      }
+      if (referencedOpponent) break;
+    }
+
+    // Decrement if response repeats a red-line statement verbatim
+    const repeatedRedLine = this.redLines.some((rl) =>
+      responseLower.includes(rl.toLowerCase().slice(0, 20)),
+    );
+
+    if (referencedOpponent) this.empathyRatio = Math.min(1, this.empathyRatio + 0.05);
+    if (repeatedRedLine) this.empathyRatio = Math.max(0, this.empathyRatio - 0.05);
+  }
+
   // ---- LLM response generation ----
   async generateLLMResponse(
     topic: string,
     otherAgents: HistoricalAgent[],
-    _debateContext: Record<string, unknown>,
+    debateContext: Record<string, unknown>,
   ): Promise<string> {
-    if (!this.llmClient) throw new Error(`No LLM client configured for ${this.name}`);
+    if (!this.llmClient) return this.generateFallbackResponse(topic);  // Bug 3
 
     const roundNum = this.conversationHistory.length;
     const numParticipants = otherAgents.length + 1;
     const isTwoPerson = numParticipants === 2;
 
-    // Build chat transcript
+    // Bug 5: extract empathy reservoir from conversation context
+    const convCtx = debateContext.conversation_context as Record<string, unknown> | undefined;
+    const ctxMetrics = convCtx?.metrics as Record<string, unknown> | undefined;
+    const empathyReservoir = (ctxMetrics?.empathy_reservoir as number) ?? 0;
+
+    // Bug 6: extract escalation prompt if deadlock warning was issued
+    const escalationPrompt = debateContext.escalation_prompt as string | undefined;
+
+    // Build chat transcript from last 8 turns (Bug 1: was -6)
     const lines: string[] = [];
     const myPrev: string[] = [];
     let otherLastMsg = "";
-    for (const entry of this.conversationHistory.slice(-6)) {
+    for (const entry of this.conversationHistory.slice(-8)) {
       const speaker = entry.speaker;
       const content = entry.content;
       if (speaker === this.name) {
@@ -269,9 +310,9 @@ export abstract class HistoricalAgent {
       phase = "Look for common ground. Offer a specific compromise or concession.";
     }
 
-    // System message
+    // System message (Bugs 1, 2, 4, 5, 6)
     const systemParts = [
-      `You are ${this.name}.`,
+      `You ARE ${this.name}. Speak only as "I". Never refer to yourself by name or in third person.`,  // Bug 4
       `Ideology: ${this.ideology}.`,
       `Personality — assertive: ${this.personality.assertiveness}, cooperative: ${this.personality.cooperativeness}, dominant: ${this.personality.dominance}, pragmatic: ${this.personality.pragmatism}, open: ${this.personality.opennessToChange}.`,
     ];
@@ -286,6 +327,9 @@ export abstract class HistoricalAgent {
       systemParts.push("- Address the other person as 'you', never by name.");
     }
     systemParts.push("- Respond to what THEY said, not to yourself.");
+    systemParts.push("- Do not cite your own prior statements as external evidence. Only engage with what other agents have said.");  // Bug 2
+    systemParts.push("- Do not repeat an argument you or any agent has already made. Introduce a new point or respond to a specific claim from the transcript.");  // Bug 1
+    systemParts.push(`- If you catch yourself writing '${this.name} believes' or '${this.name} argues', rewrite it in first person instead.`);  // Bug 4
     if (myPrev.length) {
       systemParts.push(
         `- You already said these things (say something COMPLETELY DIFFERENT — do NOT rephrase these): ${myPrev
@@ -293,6 +337,14 @@ export abstract class HistoricalAgent {
           .map((p) => p.slice(0, 100))
           .join(" | ")}`,
       );
+    }
+    // Bug 5: wire empathy reservoir into prompt
+    if (empathyReservoir > 0.15) {
+      systemParts.push("- You are currently inclined toward understanding the other side. Acknowledge one of their arguments before making your own.");
+    }
+    // Bug 6: inject escalation instruction on deadlock warning
+    if (escalationPrompt) {
+      systemParts.push(`- URGENT: ${escalationPrompt}`);
     }
     systemParts.push(`- ${phase}`);
 
@@ -308,14 +360,13 @@ export abstract class HistoricalAgent {
       prompt = `Topic: ${topic}\n\nSend your opening message:`;
     }
 
-    // Call xAI with repeat detection + retry
+    // Call xAI with repeat/self-reference/third-person detection + retry
     const maxAttempts = 3;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       let attemptSystem = system;
       const temp = attempt === 0 ? 0.95 : 0.7 + attempt * 0.1;
 
       if (attempt > 0) {
-        // On retry, add stronger anti-repeat instruction
         attemptSystem += `\n- CRITICAL: Your last response was too similar to something you already said. You MUST say something completely new and different. Change your argument, perspective, or approach entirely.`;
       }
 
@@ -327,7 +378,7 @@ export abstract class HistoricalAgent {
       if (!text?.trim()) continue;
       const candidate = text.trim();
 
-      // Check similarity against previous responses from this agent
+      // Bug 3: similarity check at 0.85 threshold (was 0.6)
       if (myPrev.length > 0) {
         const tooSimilar = myPrev.some((prev) => {
           const wordsA = new Set(candidate.toLowerCase().split(/\s+/));
@@ -335,16 +386,27 @@ export abstract class HistoricalAgent {
           let overlap = 0;
           for (const w of wordsA) if (wordsB.has(w)) overlap++;
           const union = new Set([...wordsA, ...wordsB]).size;
-          return union > 0 && overlap / union >= 0.6;
+          return union > 0 && overlap / union >= 0.85;
         });
-
         if (tooSimilar && attempt < maxAttempts - 1) continue;
       }
+
+      // Bug 2: self-reference guard — reject if agent name appears as subject > 2 times
+      const namePattern = new RegExp(`\\b${this.name.replace(/\s+/g, "\\s+")}\\b`, "gi");
+      const nameCount = (candidate.match(namePattern) ?? []).length;
+      if (nameCount > 2 && attempt < maxAttempts - 1) continue;
+
+      // Bug 4: third-person framing guard
+      const nameLower = this.name.toLowerCase();
+      const candidateLower = candidate.toLowerCase();
+      const thirdPersonHit = [" believes", " argues", " thinks", " said", " would say"].some(
+        (suffix) => candidateLower.includes(nameLower + suffix),
+      );
+      if (thirdPersonHit && attempt < maxAttempts - 1) continue;
 
       return candidate;
     }
     throw new Error(`xAI returned repeated/empty responses for ${this.name} on topic "${topic}"`);
-
   }
 
   // ---- Policy scoring ----

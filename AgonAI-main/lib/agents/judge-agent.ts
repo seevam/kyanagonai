@@ -3,7 +3,14 @@
  */
 
 import { type RegionWeights, REGION_WEIGHTS } from "../scoring/policy-scoring";
-import type { HistoricalAgent } from "./base-agent";
+import type { HistoricalAgent, LLMClient } from "./base-agent";
+
+export interface TranscriptAnalysis {
+  convergence_trend: number;
+  concessions_made: number;
+  most_empathetic_agent: string;
+  key_turning_point: string;
+}
 
 export interface JudgeVerdict {
   winner: string | null;
@@ -14,20 +21,81 @@ export interface JudgeVerdict {
   convergence_metric: number;
   policy_breakdown: Record<string, Record<string, unknown>>;
   recommendations: string[];
+  transcript_analysis?: TranscriptAnalysis;
 }
 
 export class JudgeAgent {
   private regionWeights: RegionWeights;
+  private llmClient: LLMClient | null;
 
-  constructor(regionWeights?: RegionWeights) {
+  constructor(regionWeights?: RegionWeights, llmClient?: LLMClient | null) {
     this.regionWeights = regionWeights ?? REGION_WEIGHTS.default;
+    this.llmClient = llmClient ?? null;
   }
 
-  evaluate(
+  private async analyzeTranscript(
+    transcript: string,
+    agentNames: string[],
+  ): Promise<TranscriptAnalysis | undefined> {
+    if (!this.llmClient || !transcript.trim()) return undefined;
+
+    const system = [
+      "You are an impartial academic judge evaluating a political debate transcript.",
+      "Respond ONLY with a valid JSON object, no markdown, no explanation.",
+    ].join("\n");
+
+    const prompt = [
+      "Analyze this debate transcript and return a JSON object with exactly these fields:",
+      '  "convergence_trend": number 0-1 (0 = pure divergence, 1 = full convergence)',
+      '  "concessions_made": integer count of genuine concessions made across all agents',
+      `  "most_empathetic_agent": string — the name of the agent from [${agentNames.join(", ")}] who showed the most cognitive empathy`,
+      '  "key_turning_point": string — one sentence describing the key turning point, or "None identified" if absent',
+      "",
+      "TRANSCRIPT:",
+      transcript.slice(0, 6000),
+      "",
+      'Reply ONLY: {"convergence_trend": ..., "concessions_made": ..., "most_empathetic_agent": "...", "key_turning_point": "..."}',
+    ].join("\n");
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const raw = await this.llmClient.generate(prompt, system, {
+          temperature: attempt === 0 ? 0.3 : 0.1,
+          max_tokens: 300,
+        });
+        if (!raw?.trim()) continue;
+        const cleaned = raw.replace(/```(?:json)?\s*/g, "").replace(/```\s*/g, "");
+        const match = cleaned.match(/\{[\s\S]*\}/);
+        if (match) {
+          const parsed = JSON.parse(match[0]);
+          if (
+            typeof parsed.convergence_trend === "number" &&
+            typeof parsed.concessions_made === "number" &&
+            typeof parsed.most_empathetic_agent === "string" &&
+            typeof parsed.key_turning_point === "string"
+          ) {
+            return {
+              convergence_trend: Math.max(0, Math.min(1, parsed.convergence_trend)),
+              concessions_made: Math.max(0, parsed.concessions_made),
+              most_empathetic_agent: parsed.most_empathetic_agent,
+              key_turning_point: parsed.key_turning_point,
+            };
+          }
+        }
+      } catch {
+        // retry
+      }
+    }
+    return undefined;
+  }
+
+  async evaluate(
     agents: HistoricalAgent[],
     _rounds: Record<string, unknown>[],
-    topic: string,
-  ): JudgeVerdict {
+    transcriptOrTopic: string,
+  ): Promise<JudgeVerdict> {
+    const topic = transcriptOrTopic.length < 120 ? transcriptOrTopic : "";
+    const transcript = transcriptOrTopic.length >= 120 ? transcriptOrTopic : "";
     const scorecards: Record<string, Record<string, unknown>> = {};
     for (const a of agents) scorecards[a.name] = a.scorecard.asDict();
 
@@ -92,6 +160,11 @@ export class JudgeAgent {
 
     const recommendations = this.generateRecommendations(agents, convergenceRound, topic);
 
+    // Bug 7: LLM-based transcript analysis
+    const transcriptAnalysis = transcript
+      ? await this.analyzeTranscript(transcript, agents.map((a) => a.name))
+      : undefined;
+
     return {
       winner,
       margin: Math.round(margin * 100) / 100,
@@ -101,6 +174,7 @@ export class JudgeAgent {
       convergence_metric: Math.round(convergenceMetric * 1000) / 1000,
       policy_breakdown: policyBreakdown,
       recommendations,
+      transcript_analysis: transcriptAnalysis,
     };
   }
 

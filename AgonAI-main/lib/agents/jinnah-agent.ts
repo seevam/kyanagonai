@@ -58,6 +58,37 @@ export class JinnahAgent extends HistoricalAgent {
     };
   }
 
+  protected generateFallbackResponse(topic: string): string {
+    const seeds: Record<string, string[]> = {
+      territorial_disputes: [
+        "Muslim-majority regions have the right to self-determination — this is a matter of democratic principle.",
+        "The two-nation theory is not abstract; it is a historical and demographic reality we cannot ignore.",
+        "No minority community can truly thrive under majority rule that does not respect their fundamental identity.",
+        "Pakistan is not merely a state — it is the fulfillment of Muslim aspirations on this subcontinent.",
+        "Boundaries must follow the will of the people, not the administrative convenience of departing rulers.",
+        "Constitutional safeguards alone cannot protect a people who lack their own sovereign homeland.",
+      ],
+      race_relations: [
+        "Hindus and Muslims have different laws, customs, and traditions — political unity under one state is a fantasy.",
+        "Religious minorities deserve genuine power-sharing at the table, not the charity of the majority.",
+        "I respect all faiths, but a state that does not protect Muslim political identity cannot claim my loyalty.",
+        "The Congress speaks of secularism but in practice serves Hindu majoritarian interests.",
+        "True co-existence requires genuine equality, not assimilation into a dominant culture.",
+        "Our distinct civilization deserves its own political expression, not subordination.",
+      ],
+      economic_policy: [
+        "Pakistan must build its own industrial base — we cannot remain dependent on Bombay's mills indefinitely.",
+        "Islamic economic principles offer a principled path between exploitative capitalism and godless communism.",
+        "Trade agreements must serve the people, not the convenience of foreign investors.",
+        "Our agricultural wealth has been extracted for too long; it is time to build our own prosperity.",
+        "Economic self-sufficiency is the only true guarantor of genuine political independence.",
+        "Foreign investment is welcome, but only when it respects our sovereignty and our values.",
+      ],
+    };
+    const topicSeeds = seeds[topic] ?? seeds["territorial_disputes"];
+    return topicSeeds[this.conversationHistory.length % topicSeeds.length];
+  }
+
   async generateResponse(
     topic: string,
     otherAgents: HistoricalAgent[],
