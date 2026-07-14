@@ -8,7 +8,7 @@ import {
   AgentScorecard,
   RegionWeights,
   REGION_WEIGHTS,
-  scoreProposal,
+  scoreResponseContent,
   computeObjective,
   applyEmpathyMultiplier,
   applyFatiguePenalty,
@@ -152,7 +152,6 @@ export abstract class HistoricalAgent {
   fatigue = 0;
   regionWeights: RegionWeights;
   scorecard: AgentScorecard;
-  personalityMultiplier = 1.0;
 
   constructor(opts: {
     name: string;
@@ -398,20 +397,19 @@ export abstract class HistoricalAgent {
     violatedRedLines?: number;
     lonCooperationRounds?: number;
     repeatedPositions?: number;
+    /** The actual response text spoken this round — used for content-based scoring. */
+    response?: string;
+    /** Pre-computed scores from the LLM judge; overrides the content heuristic. */
+    scores?: PolicyScores;
+    /** Judge's one-line reasoning for the scores, kept for transparency. */
+    rationale?: string;
   }): number {
     const maxRounds = opts.maxRounds ?? 20;
     const opponentObjective = opts.opponentObjective ?? 0;
 
-    const scores = scoreProposal(
-      opts.topic,
-      this.ideology,
-      this.ocean.personalityModifier(),
-      this.personality.cooperativeness,
-    );
-
-    scores.political.benefit *= this.personalityMultiplier;
-    scores.economic.benefit *= this.personalityMultiplier;
-    scores.social.benefit *= this.personalityMultiplier;
+    const scores =
+      opts.scores ??
+      scoreResponseContent(opts.topic, opts.response ?? "", this.personality.cooperativeness);
 
     this.fatigue = applyFatiguePenalty(
       this.fatigue,
@@ -431,6 +429,7 @@ export abstract class HistoricalAgent {
 
     this.scorecard.roundsPlayed++;
     this.scorecard.roundScores.push(scores);
+    this.scorecard.roundRationales.push(opts.rationale ?? "");
     this.scorecard.objectiveValues.push(adjusted);
     this.scorecard.fatigue = this.fatigue;
     this.scorecard.penalties += penalty;

@@ -41,7 +41,6 @@ export class HitlerAgent extends HistoricalAgent {
       memoryClient: opts?.memoryClient,
     });
 
-    this.personalityMultiplier = 1.3;
     this.regionWeights = REGION_WEIGHTS.authoritarian;
     this.redLines = [
       "German territorial expansion (Lebensraum)",

@@ -214,6 +214,53 @@ function ScoreCards({ scores }: { scores: Record<string, any> }) {
   );
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function JudgeVerdictPanel({ verdict }: { verdict: any }) {
+  if (!verdict) return null;
+  const ta = verdict.transcript_analysis;
+  return (
+    <div className="judge-verdict">
+      <h4>&#9878;&#65039; Judge Verdict</h4>
+      <p style={{ fontSize: "0.85rem", color: "#78350f" }}>
+        {verdict.scoring_method === "llm_judge"
+          ? "An impartial AI judge scored every round from the actual transcript — relevance, evidence, engagement with opponents, and genuine concessions. Identical arguments score identically regardless of who makes them."
+          : "Rounds were scored from each response's content (relevance, substance, proposals, cooperation vs aggression). No LLM judge was available for this run."}
+      </p>
+      <p>
+        <b>Winner:</b>{" "}
+        {verdict.winner ? (
+          <span style={{ color: getColor(verdict.winner), fontWeight: 700 }}>{verdict.winner}</span>
+        ) : (
+          "No clear winner"
+        )}{" "}
+        (margin: {roundTwo(verdict.margin)})
+      </p>
+      <p>
+        <b>Convergence:</b>{" "}
+        {verdict.convergence_round ? `Round ${verdict.convergence_round}` : "None"} (metric:{" "}
+        {roundTwo(verdict.convergence_metric)})
+      </p>
+      {ta && (
+        <p>
+          <b>Transcript analysis:</b> most empathetic agent — {ta.most_empathetic_agent};{" "}
+          concessions made — {ta.concessions_made}; convergence trend —{" "}
+          {roundTwo(ta.convergence_trend)}.
+          {ta.key_turning_point && ta.key_turning_point !== "None identified"
+            ? ` Turning point: ${ta.key_turning_point}`
+            : ""}
+        </p>
+      )}
+      {verdict.recommendations?.length > 0 && (
+        <ul>
+          {verdict.recommendations.map((r: string, i: number) => (
+            <li key={i}>{r}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export default function Home() {
   const [selectedAgents, setSelectedAgents] = useState<Record<string, boolean>>({
     hitler: true, gandhi: true, jinnah: true, rational: false, empathetic: false,
@@ -602,7 +649,19 @@ export default function Home() {
       {result?.policyScores && (
         <section className="panel">
           <h2>Policy Scores</h2>
+          <p className="help-text">
+            {result.judgeVerdict?.scoring_method === "llm_judge"
+              ? "Scored per round by the impartial judge from what each agent actually said in this debate."
+              : "Scored per round from the content of each response."}
+          </p>
           <ScoreCards scores={result.policyScores} />
+        </section>
+      )}
+
+      {/* Judge Verdict */}
+      {result?.judgeVerdict && (
+        <section className="panel">
+          <JudgeVerdictPanel verdict={result.judgeVerdict} />
         </section>
       )}
 
@@ -753,29 +812,7 @@ export default function Home() {
               </div>
             )}
 
-            {expResult.judge_verdict && (
-              <div className="judge-verdict">
-                <h4>Judge Verdict</h4>
-                <p>
-                  <b>Winner:</b> {expResult.judge_verdict.winner ?? "No clear winner"} (margin:{" "}
-                  {roundTwo(expResult.judge_verdict.margin)})
-                </p>
-                <p>
-                  <b>Convergence:</b>{" "}
-                  {expResult.judge_verdict.convergence_round
-                    ? `Round ${expResult.judge_verdict.convergence_round}`
-                    : "None"}{" "}
-                  (metric: {roundTwo(expResult.judge_verdict.convergence_metric)})
-                </p>
-                {expResult.judge_verdict.recommendations?.length > 0 && (
-                  <ul>
-                    {expResult.judge_verdict.recommendations.map((r: string, i: number) => (
-                      <li key={i}>{r}</li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            )}
+            {expResult.judge_verdict && <JudgeVerdictPanel verdict={expResult.judge_verdict} />}
           </div>
         )}
 

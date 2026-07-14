@@ -40,7 +40,6 @@ export class JinnahAgent extends HistoricalAgent {
       memoryClient: opts?.memoryClient,
     });
 
-    this.personalityMultiplier = 1.05;
     this.regionWeights = REGION_WEIGHTS.conflict_zone;
     this.redLines = [
       "Separate Muslim state (Pakistan) is non-negotiable",
