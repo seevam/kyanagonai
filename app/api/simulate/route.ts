@@ -78,7 +78,6 @@ export async function POST(request: NextRequest) {
 
     if (!stream) {
       const result = await simulator.debate(agents, topic, debateContext);
-      scoreAllRounds(result, agents, topic, rounds);
       return NextResponse.json(buildPayload(result, agents, agentNames, topic, conversationState), { headers: corsHeaders() });
     }
 
@@ -100,7 +99,6 @@ export async function POST(request: NextRequest) {
           await writer.write(encoder.encode(JSON.stringify({ type: "thinking", speaker, round: roundNumber }) + "\n"));
         });
 
-        scoreAllRounds(result, agents, topic, rounds);
         const payload = buildPayload(result, agents, agentNames, topic, conversationState);
         await writer.write(encoder.encode(JSON.stringify({ type: "complete", ...payload }) + "\n"));
       } catch (err) {
@@ -125,28 +123,6 @@ export async function POST(request: NextRequest) {
       { error: "Internal server error", detail: String(err) },
       { status: 500, headers: corsHeaders() },
     );
-  }
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function scoreAllRounds(result: any, agents: any[], topic: string, maxRounds: number) {
-  for (let roundNum = 0; roundNum < result.rounds.length; roundNum++) {
-    const rd = result.rounds[roundNum];
-    const speaker = agents.find((a: { name: string }) => a.name === rd.speaker);
-    if (speaker) {
-      let opponentObj = 0;
-      for (const other of agents) {
-        if (other.name !== speaker.name && other.scorecard.objectiveValues.length) {
-          opponentObj = other.scorecard.objectiveValues[other.scorecard.objectiveValues.length - 1];
-        }
-      }
-      speaker.scoreRound({
-        topic,
-        roundNumber: roundNum + 1,
-        maxRounds: maxRounds,
-        opponentObjective: opponentObj,
-      });
-    }
   }
 }
 
