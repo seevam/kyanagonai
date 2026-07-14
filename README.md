@@ -54,9 +54,9 @@ npm run dev
 Then open `http://localhost:3000`.
 
 ## Environment Variables
-- `XAI_API_KEY` (required) — xAI API key for Grok LLM
-- `XAI_MODEL` (default `grok-3-mini`) — model to use
-- `XAI_BASE_URL` (default `https://api.x.ai/v1`)
+- `OPENAI_API_KEY` (required) — xAI API key for Grok LLM
+- `OPENAI_MODEL` (default `grok-3-mini`) — model to use
+- `OPENAI_BASE_URL` (default `https://api.x.ai/v1`)
 - `CHAT_CACHE_TTL_S` (default `120`) — chat response cache TTL
 - `CHAT_CACHE_MAX_ITEMS` (default `256`) — max cached responses
 - `SUPERMEMORY_API_KEY`, `SUPERMEMORY_BASE_URL` — optional memory service
@@ -102,3 +102,18 @@ vercel
 
 ## License
 MIT
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Have a cookie!

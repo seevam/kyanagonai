@@ -41,7 +41,6 @@ export class GandhiAgent extends HistoricalAgent {
       memoryClient: opts?.memoryClient,
     });
 
-    this.personalityMultiplier = 0.85;
     this.regionWeights = REGION_WEIGHTS.democratic;
     this.redLines = [
       "Non-violence (Ahimsa) as the only path to truth",

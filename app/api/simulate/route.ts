@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAgent } from "@/lib/agents/agent-registry";
-import { XAIClient } from "@/lib/utils/xai-client";
+import { OpenAIClient } from "@/lib/utils/openai-client";
 import { SuperMemoryClient, ExaContextClient } from "@/lib/utils/memory-clients";
 import { InMemoryConversationStore, loadState } from "@/lib/utils/conversation-state";
 import { DebateSimulator } from "@/lib/debates/debate-simulator";
@@ -33,7 +33,7 @@ export async function POST(request: NextRequest) {
     const agentNames = (body.agents ?? []) as string[];
     const topic = (body.topic ?? "") as string;
     const rounds = parseInt(String(body.rounds ?? "12"), 10) || 12;
-    const useXai = !!(body.useGemini ?? body.useXai ?? true);
+    const useOpenAI = !!(body.useGemini ?? body.useXai ?? body.useOpenAI ?? true);
     const model = (body.model as string) ?? undefined;
     const sessionId = (body.sessionId as string) ?? undefined;
     const stream = !!(body.stream ?? false);
@@ -45,7 +45,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Topic is required" }, { status: 400, headers: corsHeaders() });
     }
 
-    const llmClient = useXai ? new XAIClient({ model }) : null;
+    const llmClient = useOpenAI ? new OpenAIClient({ model }) : null;
     const memoryClient = new SuperMemoryClient();
     const exaClient = new ExaContextClient();
 
@@ -76,19 +76,15 @@ export async function POST(request: NextRequest) {
       policy_scoring: true,
     };
 
-    // Non-streaming: return all at once (backward compatible)
     if (!stream) {
       const result = await simulator.debate(agents, topic, debateContext);
-      scoreAllRounds(result, agents, topic, rounds);
       return NextResponse.json(buildPayload(result, agents, agentNames, topic, conversationState), { headers: corsHeaders() });
     }
 
-    // Streaming: send each round as it arrives using TransformStream for immediate flushing
     const encoder = new TextEncoder();
     const { readable, writable } = new TransformStream();
     const writer = writable.getWriter();
 
-    // Run debate in the background, writing each round as it completes
     (async () => {
       try {
         const result = await simulator.debate(agents, topic, debateContext, async (rd) => {
@@ -103,7 +99,6 @@ export async function POST(request: NextRequest) {
           await writer.write(encoder.encode(JSON.stringify({ type: "thinking", speaker, round: roundNumber }) + "\n"));
         });
 
-        scoreAllRounds(result, agents, topic, rounds);
         const payload = buildPayload(result, agents, agentNames, topic, conversationState);
         await writer.write(encoder.encode(JSON.stringify({ type: "complete", ...payload }) + "\n"));
       } catch (err) {
@@ -132,28 +127,6 @@ export async function POST(request: NextRequest) {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function scoreAllRounds(result: any, agents: any[], topic: string, maxRounds: number) {
-  for (let roundNum = 0; roundNum < result.rounds.length; roundNum++) {
-    const rd = result.rounds[roundNum];
-    const speaker = agents.find((a: { name: string }) => a.name === rd.speaker);
-    if (speaker) {
-      let opponentObj = 0;
-      for (const other of agents) {
-        if (other.name !== speaker.name && other.scorecard.objectiveValues.length) {
-          opponentObj = other.scorecard.objectiveValues[other.scorecard.objectiveValues.length - 1];
-        }
-      }
-      speaker.scoreRound({
-        topic,
-        roundNumber: roundNum + 1,
-        maxRounds: maxRounds,
-        opponentObjective: opponentObj,
-      });
-    }
-  }
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function buildPayload(result: any, agents: any[], agentNames: string[], topic: string, conversationState: any) {
   return {
     agents: agentNames,
@@ -174,12 +147,10 @@ function buildPayload(result: any, agents: any[], agentNames: string[], topic: s
     empathyRatios: Object.fromEntries(
       agents.map((a) => [a.name, Math.round(a.empathyRatio * 1000) / 1000]),
     ),
-    // Bug 5: expose conversation-level empathy reservoir so it's trackable in the frontend
     conversationEmpathyReservoir: Math.round(conversationState.metrics.empathyReservoir * 1000) / 1000,
     oceanTraits: Object.fromEntries(agents.map((a) => [a.name, a.ocean.asDict()])),
     majorityVote: result.majorityVote,
     finalResolution: result.finalResolution,
-    // Bug 7: include judge verdict with LLM transcript analysis
     judgeVerdict: result.judgeVerdict ?? null,
   };
 }

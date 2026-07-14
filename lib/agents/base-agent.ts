@@ -8,16 +8,12 @@ import {
   AgentScorecard,
   RegionWeights,
   REGION_WEIGHTS,
-  scoreProposal,
+  scoreResponseContent,
   computeObjective,
   applyEmpathyMultiplier,
   applyFatiguePenalty,
   computePenalty,
 } from "../scoring/policy-scoring";
-
-// ---------------------------------------------------------------------------
-// Enums & data types
-// ---------------------------------------------------------------------------
 
 export enum Ideology {
   FASCISM = "fascism",
@@ -82,10 +78,6 @@ export interface ConversationEntry {
   timestamp: number;
 }
 
-// ---------------------------------------------------------------------------
-// Helper: PersonalityTraits -> OCEAN
-// ---------------------------------------------------------------------------
-
 export function personalityToOcean(p: PersonalityTraits): OCEANTraits {
   return new OCEANTraits(
     p.opennessToChange,
@@ -95,10 +87,6 @@ export function personalityToOcean(p: PersonalityTraits): OCEANTraits {
     1.0 - p.emotionalStability,
   );
 }
-
-// ---------------------------------------------------------------------------
-// Ideology compatibility matrix
-// ---------------------------------------------------------------------------
 
 const IDEOLOGY_MATRIX: Record<string, Record<string, number>> = {
   [Ideology.FASCISM]: {
@@ -148,10 +136,6 @@ const IDEOLOGY_MATRIX: Record<string, Record<string, number>> = {
   },
 };
 
-// ---------------------------------------------------------------------------
-// HistoricalAgent (abstract base)
-// ---------------------------------------------------------------------------
-
 export abstract class HistoricalAgent {
   name: string;
   ideology: Ideology;
@@ -168,7 +152,6 @@ export abstract class HistoricalAgent {
   fatigue = 0;
   regionWeights: RegionWeights;
   scorecard: AgentScorecard;
-  personalityMultiplier = 1.0;
 
   constructor(opts: {
     name: string;
@@ -222,16 +205,12 @@ export abstract class HistoricalAgent {
     return this.memoryClient.summarizeRecent(this.name);
   }
 
-  // ---- Fallback responses when no LLM client (Bug 3) ----
   protected generateFallbackResponse(_topic: string): string {
     throw new Error(`No LLM client configured for ${this.name}`);
   }
 
-  // ---- Update empathy reservoir based on response content (Bug 5) ----
   updateEmpathy(response: string, opponents: HistoricalAgent[]): void {
     const responseLower = response.toLowerCase();
-
-    // Increment if this response references an opponent's recent claim
     let referencedOpponent = false;
     for (const opponent of opponents) {
       for (const entry of opponent.conversationHistory.slice(-3)) {
@@ -245,37 +224,29 @@ export abstract class HistoricalAgent {
       }
       if (referencedOpponent) break;
     }
-
-    // Decrement if response repeats a red-line statement verbatim
     const repeatedRedLine = this.redLines.some((rl) =>
       responseLower.includes(rl.toLowerCase().slice(0, 20)),
     );
-
     if (referencedOpponent) this.empathyRatio = Math.min(1, this.empathyRatio + 0.05);
     if (repeatedRedLine) this.empathyRatio = Math.max(0, this.empathyRatio - 0.05);
   }
 
-  // ---- LLM response generation ----
   async generateLLMResponse(
     topic: string,
     otherAgents: HistoricalAgent[],
     debateContext: Record<string, unknown>,
   ): Promise<string> {
-    if (!this.llmClient) return this.generateFallbackResponse(topic);  // Bug 3
+    if (!this.llmClient) return this.generateFallbackResponse(topic);
 
     const roundNum = this.conversationHistory.length;
     const numParticipants = otherAgents.length + 1;
     const isTwoPerson = numParticipants === 2;
 
-    // Bug 5: extract empathy reservoir from conversation context
     const convCtx = debateContext.conversation_context as Record<string, unknown> | undefined;
     const ctxMetrics = convCtx?.metrics as Record<string, unknown> | undefined;
     const empathyReservoir = (ctxMetrics?.empathy_reservoir as number) ?? 0;
-
-    // Bug 6: extract escalation prompt if deadlock warning was issued
     const escalationPrompt = debateContext.escalation_prompt as string | undefined;
 
-    // Build chat transcript from last 8 turns (Bug 1: was -6)
     const lines: string[] = [];
     const myPrev: string[] = [];
     let otherLastMsg = "";
@@ -300,7 +271,6 @@ export abstract class HistoricalAgent {
 
     const chatLog = lines.join("\n");
 
-    // Phase directive
     let phase: string;
     if (roundNum === 0) {
       phase = "This is your OPENING message. Introduce your stance on the topic.";
@@ -310,15 +280,28 @@ export abstract class HistoricalAgent {
       phase = "Look for common ground. Offer a specific compromise or concession.";
     }
 
-    // System message (Bugs 1, 2, 4, 5, 6)
     const systemParts = [
-      `You ARE ${this.name}. Speak only as "I". Never refer to yourself by name or in third person.`,  // Bug 4
+      `You ARE ${this.name}. Speak only as "I". Never refer to yourself by name or in third person.`,
       `Ideology: ${this.ideology}.`,
       `Personality — assertive: ${this.personality.assertiveness}, cooperative: ${this.personality.cooperativeness}, dominant: ${this.personality.dominance}, pragmatic: ${this.personality.pragmatism}, open: ${this.personality.opennessToChange}.`,
     ];
+
     if (this.redLines.length) {
       systemParts.push(`Non-negotiable limits: ${this.redLines.join("; ")}.`);
     }
+
+    // ---- Stakes and scoring context ----
+    systemParts.push("");
+    systemParts.push("Your objective in this debate:");
+    systemParts.push("- You are trying to WIN by maximizing your political, economic, and social outcomes.");
+    systemParts.push("- Political score: how much power and legitimacy your position gains.");
+    systemParts.push("- Economic score: how much your side benefits materially from the outcome.");
+    systemParts.push("- Social score: how much public support and moral authority your position earns.");
+    systemParts.push(`- Your current empathy level is ${this.empathyRatio.toFixed(2)} out of 1.0. Higher empathy means you find common ground where it serves your interests.`);
+    systemParts.push("- If the debate deadlocks with no progress, everyone loses points. Engage genuinely — do not just repeat yourself.");
+    systemParts.push("- Acknowledging an opponent's point or making a genuine concession earns you social score and credibility, even if you disagree overall.");
+    // ---- End stakes ----
+
     systemParts.push("");
     systemParts.push("Rules:");
     systemParts.push("- 1 to 3 short sentences, like a text message.");
@@ -327,9 +310,10 @@ export abstract class HistoricalAgent {
       systemParts.push("- Address the other person as 'you', never by name.");
     }
     systemParts.push("- Respond to what THEY said, not to yourself.");
-    systemParts.push("- Do not cite your own prior statements as external evidence. Only engage with what other agents have said.");  // Bug 2
-    systemParts.push("- Do not repeat an argument you or any agent has already made. Introduce a new point or respond to a specific claim from the transcript.");  // Bug 1
-    systemParts.push(`- If you catch yourself writing '${this.name} believes' or '${this.name} argues', rewrite it in first person instead.`);  // Bug 4
+    systemParts.push("- Do not cite your own prior statements as external evidence. Only engage with what other agents have said.");
+    systemParts.push("- Do not repeat an argument you or any agent has already made. Introduce a new point or respond to a specific claim from the transcript.");
+    systemParts.push(`- If you catch yourself writing '${this.name} believes' or '${this.name} argues', rewrite it in first person instead.`);
+
     if (myPrev.length) {
       systemParts.push(
         `- You already said these things (say something COMPLETELY DIFFERENT — do NOT rephrase these): ${myPrev
@@ -338,19 +322,19 @@ export abstract class HistoricalAgent {
           .join(" | ")}`,
       );
     }
-    // Bug 5: wire empathy reservoir into prompt
+
     if (empathyReservoir > 0.15) {
       systemParts.push("- You are currently inclined toward understanding the other side. Acknowledge one of their arguments before making your own.");
     }
-    // Bug 6: inject escalation instruction on deadlock warning
+
     if (escalationPrompt) {
       systemParts.push(`- URGENT: ${escalationPrompt}`);
     }
+
     systemParts.push(`- ${phase}`);
 
     const system = systemParts.join("\n");
 
-    // User prompt
     let prompt: string;
     if (chatLog) {
       prompt = `Topic: ${topic}\n\nConversation:\n${chatLog}\n\n`;
@@ -360,7 +344,6 @@ export abstract class HistoricalAgent {
       prompt = `Topic: ${topic}\n\nSend your opening message:`;
     }
 
-    // Call xAI with repeat/self-reference/third-person detection + retry
     const maxAttempts = 3;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       let attemptSystem = system;
@@ -378,7 +361,6 @@ export abstract class HistoricalAgent {
       if (!text?.trim()) continue;
       const candidate = text.trim();
 
-      // Bug 3: similarity check at 0.85 threshold (was 0.6)
       if (myPrev.length > 0) {
         const tooSimilar = myPrev.some((prev) => {
           const wordsA = new Set(candidate.toLowerCase().split(/\s+/));
@@ -391,12 +373,10 @@ export abstract class HistoricalAgent {
         if (tooSimilar && attempt < maxAttempts - 1) continue;
       }
 
-      // Bug 2: self-reference guard — reject if agent name appears as subject > 2 times
       const namePattern = new RegExp(`\\b${this.name.replace(/\s+/g, "\\s+")}\\b`, "gi");
       const nameCount = (candidate.match(namePattern) ?? []).length;
       if (nameCount > 2 && attempt < maxAttempts - 1) continue;
 
-      // Bug 4: third-person framing guard
       const nameLower = this.name.toLowerCase();
       const candidateLower = candidate.toLowerCase();
       const thirdPersonHit = [" believes", " argues", " thinks", " said", " would say"].some(
@@ -406,32 +386,30 @@ export abstract class HistoricalAgent {
 
       return candidate;
     }
-    throw new Error(`xAI returned repeated/empty responses for ${this.name} on topic "${topic}"`);
+    throw new Error(`OpenAI returned repeated/empty responses for ${this.name} on topic "${topic}"`);
   }
 
-  // ---- Policy scoring ----
   scoreRound(opts: {
     topic: string;
     roundNumber: number;
     maxRounds?: number;
     opponentObjective?: number;
     violatedRedLines?: number;
-    lowCooperationRounds?: number;
+    lonCooperationRounds?: number;
     repeatedPositions?: number;
+    /** The actual response text spoken this round — used for content-based scoring. */
+    response?: string;
+    /** Pre-computed scores from the LLM judge; overrides the content heuristic. */
+    scores?: PolicyScores;
+    /** Judge's one-line reasoning for the scores, kept for transparency. */
+    rationale?: string;
   }): number {
     const maxRounds = opts.maxRounds ?? 20;
     const opponentObjective = opts.opponentObjective ?? 0;
 
-    const scores = scoreProposal(
-      opts.topic,
-      this.ideology,
-      this.ocean.personalityModifier(),
-      this.personality.cooperativeness,
-    );
-
-    scores.political.benefit *= this.personalityMultiplier;
-    scores.economic.benefit *= this.personalityMultiplier;
-    scores.social.benefit *= this.personalityMultiplier;
+    const scores =
+      opts.scores ??
+      scoreResponseContent(opts.topic, opts.response ?? "", this.personality.cooperativeness);
 
     this.fatigue = applyFatiguePenalty(
       this.fatigue,
@@ -442,7 +420,7 @@ export abstract class HistoricalAgent {
 
     const penalty = computePenalty(
       opts.violatedRedLines ?? 0,
-      opts.lowCooperationRounds ?? 0,
+      opts.lonCooperationRounds ?? 0,
       opts.repeatedPositions ?? 0,
     );
 
@@ -451,6 +429,7 @@ export abstract class HistoricalAgent {
 
     this.scorecard.roundsPlayed++;
     this.scorecard.roundScores.push(scores);
+    this.scorecard.roundRationales.push(opts.rationale ?? "");
     this.scorecard.objectiveValues.push(adjusted);
     this.scorecard.fatigue = this.fatigue;
     this.scorecard.penalties += penalty;
@@ -467,7 +446,6 @@ export abstract class HistoricalAgent {
     return adjusted;
   }
 
-  // ---- Consensus helpers ----
   calculateConsensusScore(other: HistoricalAgent): number {
     const ideologyCompat = IDEOLOGY_MATRIX[this.ideology]?.[other.ideology] ?? 0.5;
 
@@ -518,7 +496,6 @@ export abstract class HistoricalAgent {
       accept = blended >= 0.45;
     }
 
-    // Generate reasoning and counter_proposal via LLM
     if (this.llmClient) {
       const system = [
         `You are ${this.name}, ideology: ${this.ideology}.`,
@@ -542,7 +519,6 @@ export abstract class HistoricalAgent {
             max_tokens: 200,
           });
           if (raw?.trim()) {
-            // Strip markdown fences if present
             const cleaned = raw.replace(/```(?:json)?\s*/g, "").replace(/```\s*/g, "");
             const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
@@ -551,7 +527,6 @@ export abstract class HistoricalAgent {
                 return { accept, reasoning: parsed.reasoning, counter_proposal: parsed.counter_proposal };
               }
             }
-            // If we got text but couldn't parse JSON, use the raw text as reasoning
             return {
               accept,
               reasoning: raw.trim().slice(0, 200),
@@ -562,7 +537,6 @@ export abstract class HistoricalAgent {
           // retry once
         }
       }
-      // All LLM attempts failed; fall back to deterministic evaluation
       return {
         accept,
         reasoning: accept
@@ -573,7 +547,7 @@ export abstract class HistoricalAgent {
         counter_proposal: accept ? "I accept with conditions." : "I propose an alternative approach.",
       };
     }
-    // No LLM client: deterministic evaluation
+
     return {
       accept,
       reasoning: accept
@@ -590,3 +564,4 @@ export abstract class HistoricalAgent {
     this.ocean.agreeableness = Math.min(1, this.ocean.agreeableness + boost * 0.5);
   }
 }
+

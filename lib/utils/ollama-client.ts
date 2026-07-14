@@ -2,7 +2,7 @@
  * LLM client for local Ollama models.
  */
 
-import type { GenerateOptions } from "./xai-client";
+import type { GenerateOptions } from "./openai-client";
 
 export class OllamaClient {
   private baseUrl: string;

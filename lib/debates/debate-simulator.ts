@@ -2,8 +2,8 @@
  * Debate simulation system for historical figure AI agents.
  */
 
-import type { HistoricalAgent } from "../agents/base-agent";
-import { JudgeAgent, type JudgeVerdict } from "../agents/judge-agent";
+import type { HistoricalAgent, LLMClient } from "../agents/base-agent";
+import { JudgeAgent, type JudgeVerdict, type JudgeRoundScore } from "../agents/judge-agent";
 import { ConversationState, planResponse } from "../utils/conversation-state";
 
 export enum DebateStatus {
@@ -227,18 +227,69 @@ export class DebateSimulator {
     return pairs > 0 && totalSim / pairs > 0.80;
   }
 
+  /**
+   * Score every round from the actual transcript content BEFORE the judge
+   * verdict is computed. Uses the LLM judge when available (ideology-blind,
+   * performance-only grading of each response); falls back to a content
+   * heuristic derived from the response text. Either way, scores now vary
+   * with what was actually said each round.
+   */
+  private async scoreDebateRounds(
+    agents: HistoricalAgent[],
+    topic: string,
+    llmClient: LLMClient | null,
+  ): Promise<"llm_judge" | "content_heuristic"> {
+    let llmScores: (JudgeRoundScore | null)[] | null = null;
+    if (llmClient && this.debateHistory.length) {
+      const judge = new JudgeAgent(undefined, llmClient);
+      llmScores = await judge.scoreRounds(
+        topic,
+        this.debateHistory.map((r) => ({ speaker: r.speaker, response: r.response })),
+      );
+    }
+
+    for (let i = 0; i < this.debateHistory.length; i++) {
+      const rd = this.debateHistory[i];
+      const speaker = agents.find((a) => a.name === rd.speaker);
+      if (!speaker) continue;
+      let opponentObj = 0;
+      for (const other of agents) {
+        if (other.name !== speaker.name && other.scorecard.objectiveValues.length) {
+          opponentObj = other.scorecard.objectiveValues[other.scorecard.objectiveValues.length - 1];
+        }
+      }
+      const judged = llmScores?.[i] ?? null;
+      speaker.scoreRound({
+        topic,
+        roundNumber: rd.roundNumber,
+        maxRounds: this.maxRounds,
+        opponentObjective: opponentObj,
+        response: rd.response,
+        scores: judged?.scores,
+        rationale: judged?.rationale,
+      });
+    }
+
+    return llmScores ? "llm_judge" : "content_heuristic";
+  }
+
   private async createResult(
     status: DebateStatus,
     agents: HistoricalAgent[],
     consensusScore: number,
     duration: number,
-    llmClientForJudge?: import("../agents/base-agent").LLMClient | null,
+    llmClientForJudge?: LLMClient | null,
   ): Promise<DebateResult> {
     const { agreements, disagreements } = this.analyzePositions(agents);
     const finalPositions: Record<string, Record<string, string>> = {};
     for (const agent of agents) finalPositions[agent.name] = agent.currentPosition;
 
     const { majorityVote, finalResolution } = await this.conductMajorityVote(agents);
+
+    // Score rounds from transcript content BEFORE the judge verdict and
+    // scorecard snapshot, so both reflect actual debate performance.
+    const topic = this.debateHistory[0]?.topic ?? "";
+    const scoringMethod = await this.scoreDebateRounds(agents, topic, llmClientForJudge ?? null);
 
     const policyScorecards: Record<string, Record<string, unknown>> = {};
     for (const agent of agents) {
@@ -254,6 +305,7 @@ export class DebateSimulator {
       this.debateHistory as unknown as Record<string, unknown>[],
       this.debateHistory.map((r) => r.response).join("\n\n"),
     );
+    judgeVerdict.scoring_method = scoringMethod;
 
     return {
       status,

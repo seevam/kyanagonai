@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 
-const XAI_BASE_URL = process.env.XAI_BASE_URL ?? "https://api.x.ai/v1";
-const XAI_API_KEY = process.env.XAI_API_KEY ?? "";
+const OPENAI_BASE_URL = "https://api.openai.com/v1";
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY ?? "";
 const CACHE_TTL_S = parseInt(process.env.CHAT_CACHE_TTL_S ?? "120", 10);
 const CACHE_MAX_ITEMS = parseInt(process.env.CHAT_CACHE_MAX_ITEMS ?? "256", 10);
 
@@ -43,7 +43,7 @@ interface ChatMessage {
   content: string;
 }
 
-function toXAIMessages(
+function toOpenAIMessages(
   messages: { role?: string; content?: string }[],
 ): ChatMessage[] {
   const result: ChatMessage[] = [];
@@ -51,11 +51,11 @@ function toXAIMessages(
     const text = m.content ?? "";
     if (!text) continue;
     const role = (m.role ?? "user").toLowerCase();
-    let xaiRole: string;
-    if (role === "assistant" || role === "model") xaiRole = "assistant";
-    else if (role === "system") xaiRole = "system";
-    else xaiRole = "user";
-    result.push({ role: xaiRole, content: text });
+    let openaiRole: string;
+    if (role === "assistant" || role === "model") openaiRole = "assistant";
+    else if (role === "system") openaiRole = "system";
+    else openaiRole = "user";
+    result.push({ role: openaiRole, content: text });
   }
   return result;
 }
@@ -91,16 +91,16 @@ export async function OPTIONS() {
 
 export async function GET() {
   return NextResponse.json(
-    { status: "ok", service: "chat", api: "xai", has_api_key: !!XAI_API_KEY },
+    { status: "ok", service: "chat", api: "openai", has_api_key: !!OPENAI_API_KEY },
     { headers: corsHeaders() },
   );
 }
 
 export async function POST(request: NextRequest) {
   try {
-    if (!XAI_API_KEY) {
+    if (!OPENAI_API_KEY) {
       return NextResponse.json(
-        { error: "XAI_API_KEY is not configured" },
+        { error: "OPENAI_API_KEY is not configured" },
         { status: 500, headers: corsHeaders() },
       );
     }
@@ -116,15 +116,15 @@ export async function POST(request: NextRequest) {
 
     const model =
       (typeof body.model === "string" ? body.model : null) ??
-      process.env.XAI_MODEL ??
-      "grok-3-mini";
+      process.env.OPENAI_MODEL ??
+      "gpt-4o-mini";
 
     const temperature = typeof body.temperature === "number" ? body.temperature : 0.2;
     const maxTokens = typeof body.max_tokens === "number" ? body.max_tokens : 512;
 
     const payload = {
       model,
-      messages: toXAIMessages(messages),
+      messages: toOpenAIMessages(messages),
       temperature,
       max_tokens: maxTokens,
     };
@@ -135,10 +135,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ...cached, cached: true }, { headers: corsHeaders() });
     }
 
-    const resp = await fetch(`${XAI_BASE_URL}/chat/completions`, {
+    const resp = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${XAI_API_KEY}`,
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(payload),
@@ -148,7 +148,7 @@ export async function POST(request: NextRequest) {
     if (!resp.ok) {
       const text = await resp.text();
       return NextResponse.json(
-        { error: "xAI API error", detail: text },
+        { error: "OpenAI API error", detail: text },
         { status: resp.status, headers: corsHeaders() },
       );
     }

@@ -2,7 +2,12 @@
  * Judge/Mediator agent — non-participating evaluator.
  */
 
-import { type RegionWeights, REGION_WEIGHTS } from "../scoring/policy-scoring";
+import {
+  type RegionWeights,
+  REGION_WEIGHTS,
+  PolicyDimension,
+  PolicyScores,
+} from "../scoring/policy-scoring";
 import type { HistoricalAgent, LLMClient } from "./base-agent";
 
 export interface TranscriptAnalysis {
@@ -10,6 +15,11 @@ export interface TranscriptAnalysis {
   concessions_made: number;
   most_empathetic_agent: string;
   key_turning_point: string;
+}
+
+export interface JudgeRoundScore {
+  scores: PolicyScores;
+  rationale: string;
 }
 
 export interface JudgeVerdict {
@@ -22,6 +32,8 @@ export interface JudgeVerdict {
   policy_breakdown: Record<string, Record<string, unknown>>;
   recommendations: string[];
   transcript_analysis?: TranscriptAnalysis;
+  /** How the per-round policy scores were derived. */
+  scoring_method?: "llm_judge" | "content_heuristic";
 }
 
 export class JudgeAgent {
@@ -31,6 +43,94 @@ export class JudgeAgent {
   constructor(regionWeights?: RegionWeights, llmClient?: LLMClient | null) {
     this.regionWeights = regionWeights ?? REGION_WEIGHTS.default;
     this.llmClient = llmClient ?? null;
+  }
+
+  /**
+   * Score every debate response on actual debate performance, using the LLM.
+   * The judge is explicitly ideology-blind: it grades what was said in this
+   * transcript, not who said it. Returns one entry per round (aligned by
+   * index), or null if no LLM is available or every batch failed.
+   */
+  async scoreRounds(
+    topic: string,
+    rounds: { speaker: string; response: string }[],
+  ): Promise<(JudgeRoundScore | null)[] | null> {
+    if (!this.llmClient || !rounds.length) return null;
+
+    const system = [
+      "You are an impartial debate judge scoring individual debate responses.",
+      "Judge ONLY the debate performance shown in the text: relevance to the topic, argument quality, use of evidence, direct engagement with opponents' points, persuasiveness, and constructive proposals.",
+      "Do NOT reward or penalize any speaker for their ideology, historical identity, or reputation — identical words must receive identical scores regardless of the speaker.",
+      "Respond ONLY with a valid JSON array, no markdown, no explanation.",
+    ].join("\n");
+
+    const BATCH_SIZE = 8;
+    const results: (JudgeRoundScore | null)[] = new Array(rounds.length).fill(null);
+    let anySucceeded = false;
+
+    for (let start = 0; start < rounds.length; start += BATCH_SIZE) {
+      const batch = rounds.slice(start, start + BATCH_SIZE);
+      const numbered = batch
+        .map((r, i) => `[${i + 1}] ${r.speaker}: ${r.response.slice(0, 400)}`)
+        .join("\n\n");
+
+      const prompt = [
+        `Debate topic: "${topic}"`,
+        "",
+        "Score each numbered response below. For each, give integers 0-100:",
+        "- political benefit/cost: legitimacy and persuasive power gained vs credibility lost",
+        "- economic benefit/cost: strength of material/practical arguments vs unaddressed practical weaknesses",
+        "- social benefit/cost: goodwill, empathy and common ground earned vs hostility and alienation caused",
+        "A vague, off-topic, or purely repetitive response should score low benefits. A specific, on-topic, well-evidenced or genuinely conciliatory response should score high benefits.",
+        "",
+        "RESPONSES:",
+        numbered,
+        "",
+        `Reply ONLY with a JSON array of exactly ${batch.length} objects:`,
+        '[{"n": 1, "political": [benefit, cost], "economic": [benefit, cost], "social": [benefit, cost], "rationale": "one short sentence"}, ...]',
+      ].join("\n");
+
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const raw = await this.llmClient.generate(prompt, system, {
+            temperature: attempt === 0 ? 0.2 : 0.0,
+            max_tokens: 1200,
+          });
+          if (!raw?.trim()) continue;
+          const cleaned = raw.replace(/```(?:json)?\s*/g, "").replace(/```\s*/g, "");
+          const match = cleaned.match(/\[[\s\S]*\]/);
+          if (!match) continue;
+          const parsed = JSON.parse(match[0]);
+          if (!Array.isArray(parsed)) continue;
+
+          for (const item of parsed) {
+            const idx = start + (Number(item?.n) - 1);
+            if (idx < start || idx >= start + batch.length) continue;
+            const dims: Record<string, PolicyDimension> = {};
+            let valid = true;
+            for (const dim of ["political", "economic", "social"] as const) {
+              const pair = item?.[dim];
+              if (!Array.isArray(pair) || typeof pair[0] !== "number" || typeof pair[1] !== "number") {
+                valid = false;
+                break;
+              }
+              dims[dim] = new PolicyDimension(pair[0], pair[1]);
+            }
+            if (!valid) continue;
+            results[idx] = {
+              scores: new PolicyScores(dims.political, dims.economic, dims.social),
+              rationale: typeof item?.rationale === "string" ? item.rationale : "",
+            };
+            anySucceeded = true;
+          }
+          break;
+        } catch {
+          // retry
+        }
+      }
+    }
+
+    return anySucceeded ? results : null;
   }
 
   private async analyzeTranscript(

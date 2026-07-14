@@ -106,6 +106,7 @@ export class AgentScorecard {
   roundsPlayed = 0;
   cumulativeScores: PolicyScores = new PolicyScores();
   roundScores: PolicyScores[] = [];
+  roundRationales: string[] = [];
   objectiveValues: number[] = [];
   fatigue = 0;
   empathyBonus = 0;
@@ -130,6 +131,7 @@ export class AgentScorecard {
       empathy_bonus: Math.round(this.empathyBonus * 100) / 100,
       penalties: Math.round(this.penalties * 100) / 100,
       round_history: this.roundScores.map((s) => s.asDict()),
+      round_rationales: this.roundRationales,
     };
   }
 }
@@ -191,62 +193,84 @@ export class OCEANTraits {
 }
 
 // ---------------------------------------------------------------------------
-// Topic base scores
+// Content-based round scoring (heuristic fallback when no LLM judge)
 // ---------------------------------------------------------------------------
 
-const TOPIC_BASE_SCORES: Record<string, Record<string, [number, number]>> = {
-  territorial_disputes: { political: [70, 55], economic: [40, 60], social: [30, 65] },
-  race_relations: { political: [50, 40], economic: [35, 30], social: [75, 50] },
-  economic_policy: { political: [45, 35], economic: [80, 50], social: [55, 40] },
-  partition_of_india: { political: [65, 60], economic: [40, 55], social: [35, 70] },
-  war: { political: [75, 65], economic: [30, 80], social: [20, 85] },
-  immigration: { political: [55, 50], economic: [60, 45], social: [65, 55] },
-  socialism: { political: [50, 45], economic: [55, 60], social: [70, 40] },
-};
+const COOPERATION_MARKERS = [
+  "agree", "common ground", "compromise", "concede", "concession", "you're right",
+  "you are right", "fair point", "understand your", "willing to", "together",
+  "mutual", "shared", "accept your", "acknowledge",
+];
 
-function ideologyShifts(ideology: string): Record<string, [number, number]> {
-  const shifts: Record<string, Record<string, [number, number]>> = {
-    fascism: { political: [30, -15], economic: [5, 20], social: [-35, 35] },
-    nonviolence: { political: [-15, -30], economic: [-5, -20], social: [35, -35] },
-    muslim_nationalism: { political: [20, 10], economic: [10, -5], social: [10, 15] },
-    communism: { political: [10, 20], economic: [20, 25], social: [25, 5] },
-    democracy: { political: [15, -15], economic: [5, -5], social: [25, -20] },
-    capitalism: { political: [-5, 10], economic: [35, 15], social: [-15, 20] },
-    authoritarianism: { political: [35, -10], economic: [5, 15], social: [-30, 30] },
-    liberalism: { political: [10, -10], economic: [15, 5], social: [25, -20] },
-    conservatism: { political: [20, -5], economic: [15, 10], social: [-5, 10] },
-  };
-  return shifts[ideology.toLowerCase()] ?? { political: [0, 0], economic: [0, 0], social: [0, 0] };
+const AGGRESSION_MARKERS = [
+  "never", "refuse", "demand", "destroy", "crush", "enemy", "weakness",
+  "surrender", "unacceptable", "threat", "force", "war", "annihilat",
+];
+
+const PROPOSAL_MARKERS = [
+  "propose", "suggest", "offer", "plan", "framework", "solution", "let us",
+  "we could", "we should", "how about", "what if", "alternative",
+];
+
+const EVIDENCE_MARKERS = [
+  "because", "history shows", "for example", "evidence", "consider", "in fact",
+  "as we saw", "experience", "demonstrat", "proven", "record shows",
+];
+
+function countMarkers(text: string, markers: string[]): number {
+  let n = 0;
+  for (const m of markers) if (text.includes(m)) n++;
+  return n;
 }
 
-// ---------------------------------------------------------------------------
-// Scoring functions
-// ---------------------------------------------------------------------------
-
-export function scoreProposal(
+/**
+ * Score a single debate response from its actual content. Every signal is
+ * derived from the text itself — relevance to the topic, substance, evidence,
+ * engagement, concrete proposals, cooperation vs aggression. No ideology or
+ * identity of the speaker is consulted, so the same words score the same
+ * regardless of who says them.
+ */
+export function scoreResponseContent(
   topic: string,
-  agentIdeology: string,
-  personalityModifier = 0,
+  responseText: string,
   cooperationLevel = 0.5,
 ): PolicyScores {
-  const base = TOPIC_BASE_SCORES[topic] ?? {
-    political: [50, 50] as [number, number],
-    economic: [50, 50] as [number, number],
-    social: [50, 50] as [number, number],
-  };
+  const text = responseText.toLowerCase();
+  const words = text.split(/\W+/).filter(Boolean);
 
-  const shifts = ideologyShifts(agentIdeology);
-  const dims: Record<string, PolicyDimension> = {};
+  // Substance: enough said to constitute an argument (saturates ~50 words)
+  const substance = Math.min(words.length / 50, 1);
 
-  for (const dimName of ["political", "economic", "social"] as const) {
-    const [b, c] = base[dimName];
-    const shift = shifts[dimName] ?? [0, 0];
-    const benefit = b + shift[0] + personalityModifier * 30;
-    const cost = c + shift[1] - cooperationLevel * 25;
-    dims[dimName] = new PolicyDimension(benefit, cost);
+  // Relevance: overlap between meaningful topic words and the response
+  const topicWords = topic.toLowerCase().split(/\W+/).filter((w) => w.length > 3);
+  let relevance = 0.5;
+  if (topicWords.length) {
+    const hits = topicWords.filter((w) => text.includes(w)).length;
+    relevance = hits / topicWords.length;
   }
 
-  return new PolicyScores(dims.political, dims.economic, dims.social);
+  const coop = Math.min(countMarkers(text, COOPERATION_MARKERS), 4);
+  const aggression = Math.min(countMarkers(text, AGGRESSION_MARKERS), 4);
+  const proposals = Math.min(countMarkers(text, PROPOSAL_MARKERS), 4);
+  const evidence = Math.min(countMarkers(text, EVIDENCE_MARKERS), 4);
+  const engagesOpponent = /\byou\b|\byour\b/.test(text) ? 1 : 0;
+
+  const quality = substance * (0.4 + 0.6 * relevance); // 0..1
+
+  const political = new PolicyDimension(
+    35 + quality * 30 + evidence * 4 + proposals * 3 + engagesOpponent * 4,
+    55 - quality * 15 - coop * 3 + aggression * 4 - cooperationLevel * 10,
+  );
+  const economic = new PolicyDimension(
+    35 + quality * 30 + proposals * 5 + evidence * 3,
+    55 - quality * 15 - proposals * 3 + aggression * 3 - cooperationLevel * 10,
+  );
+  const social = new PolicyDimension(
+    35 + quality * 25 + coop * 6 + engagesOpponent * 4,
+    55 - quality * 10 - coop * 5 + aggression * 6 - cooperationLevel * 10,
+  );
+
+  return new PolicyScores(political, economic, social);
 }
 
 export function computeObjective(

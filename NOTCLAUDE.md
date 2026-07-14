@@ -6,7 +6,7 @@ Built with Next.js 16, TypeScript, and React. Uses xAI (Grok) API for LLM.
 ## Stack
 - **Framework**: Next.js (App Router)
 - **Language**: TypeScript
-- **LLM**: xAI (Grok) via REST API
+- **LLM**: OPENAI (GPT)
 - **Deploy**: Vercel
 
 ## Structure

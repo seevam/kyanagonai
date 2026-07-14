@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAgent } from "@/lib/agents/agent-registry";
-import { XAIClient } from "@/lib/utils/xai-client";
+import { OpenAIClient } from "@/lib/utils/openai-client";
 import {
   getExperimentConfigs,
   runExperiment,
@@ -48,7 +48,7 @@ export async function POST(request: NextRequest) {
     const topic = String(body.topic ?? "war");
     const maxRounds = parseInt(String(body.maxRounds ?? "15"), 10);
 
-    const llmClient = new XAIClient();
+    const llmClient = new OpenAIClient();
 
     let historicalAgents;
     const histNames = (body.historicalAgents ?? []) as string[];
